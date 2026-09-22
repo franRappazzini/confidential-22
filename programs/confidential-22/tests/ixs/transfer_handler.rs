@@ -118,12 +118,7 @@ pub fn create_and_configure(
 
 /// Create a fee bearing confidential holder: a token account sized for all
 /// three account extensions, initialized, and configured.
-fn configure_fee_holder(
-    svm: &mut LiteSVM,
-    payer: &Keypair,
-    mint: &Pubkey,
-    owner: &Keypair,
-) -> Holder {
+pub fn configure_fee_holder(svm: &mut LiteSVM, mint: &Pubkey, owner: &Keypair) -> Holder {
     let space = ExtensionType::try_calculate_account_len::<TokenAccountState>(&[
         ExtensionType::TransferFeeAmount,
         ExtensionType::ConfidentialTransferAccount,
@@ -136,7 +131,7 @@ fn configure_fee_holder(
         svm,
         &[
             solana_system_interface::instruction::create_account(
-                &payer.pubkey(),
+                &owner.pubkey(),
                 &ta.pubkey(),
                 lamports,
                 space as u64,
@@ -144,8 +139,8 @@ fn configure_fee_holder(
             ),
             initialize_account3(&t22new::ID, &ta.pubkey(), mint, &owner.pubkey()).unwrap(),
         ],
-        payer,
-        &[&ta, payer],
+        owner,
+        &[&ta, owner],
         false,
     );
 
@@ -162,13 +157,25 @@ fn configure_fee_holder(
         ProofLocation::InstructionOffset(NonZeroI8::new(1).unwrap(), &proof),
     )
     .unwrap();
-    utils::send_tx(svm, &ixs, payer, &[owner, payer], false);
+    utils::send_tx(svm, &ixs, owner, &[owner], false);
 
     Holder {
         account: ta.pubkey(),
         elgamal,
         aes,
     }
+}
+
+/// Read the withheld fee sitting on a token account. Encrypted under the fee
+/// authority's key, so only that key can read it, not the holder's.
+pub fn withheld_on_account(svm: &LiteSVM, account: &Pubkey, fee_authority: &ElGamalKeypair) -> u64 {
+    let acct = svm.get_account(account).unwrap();
+    let state = StateWithExtensions::<TokenAccountState>::unpack(&acct.data).unwrap();
+    let ext = state
+        .get_extension::<ConfidentialTransferFeeAmount>()
+        .unwrap();
+    let ciphertext: ElGamalCiphertext = ext.withheld_amount.try_into().unwrap();
+    fee_authority.secret().decrypt_u32(&ciphertext).unwrap()
 }
 
 pub fn mint_to_confidential(
@@ -184,7 +191,7 @@ pub fn mint_to_confidential(
             &mint.pubkey(),
             &holder.account,
             &authority.pubkey(),
-            &[&authority.pubkey()],
+            &[],
             10_000,
         )
         .unwrap()],

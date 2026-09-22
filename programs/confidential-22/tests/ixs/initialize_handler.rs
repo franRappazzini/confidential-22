@@ -7,7 +7,6 @@ use {
     solana_keypair::Keypair,
     solana_message::Address,
     solana_signer::Signer,
-    zk::encryption::derivation::derive_confidential_keys,
 };
 
 pub fn create_initialixe_ix(
@@ -17,10 +16,8 @@ pub fn create_initialixe_ix(
     decimals: u8,
     transfer_fee_bps: u16,
     maximum_fee: u64,
+    fee_authority_pubkey: [u8; 32],
 ) -> Instruction {
-    let (fee_authority_elgamal, _) = derive_confidential_keys(&authority, b"").unwrap();
-    let fee_authority_pubkey: [u8; 32] = fee_authority_elgamal.pubkey().into();
-
     Instruction::new_with_bytes(
         confidential_22::ID,
         &confidential_22::instruction::Initialize {
