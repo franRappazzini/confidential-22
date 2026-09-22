@@ -1,0 +1,19 @@
+skip_local_validator = true
+
+[toolchain]
+
+[features]
+resolution = true
+skip-lint = false
+
+[programs.localnet]
+confidential_22 = "23p1sp6EyHEvK1S8cS9AFPtLQDbsKKUzgXXtB6Ys7TUC"
+
+[provider]
+cluster = "localnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "cargo test -- --nocapture"
+
+[hooks]
