@@ -151,7 +151,7 @@ fn confidential_flow() {
     );
 
     // ---- the fee bearing transfer ----------------------------------------
-    let transfer_amount = 100_000;
+    let transfer_amount = 50_000;
     let ct = ixs::transfer_handler::read_ct(&svm, &holder1.account);
     let current_available: ElGamalCiphertext = ct.available_balance.try_into().unwrap();
     let current_decryptable: AeCiphertext = ct.decryptable_available_balance.try_into().unwrap();
@@ -290,16 +290,17 @@ fn confidential_flow() {
     );
 
     // ---- withdraw back to the public balance ------------------------------
-    let withdraw_amount = 1_000u64;
-    let bob_ct = ixs::transfer_handler::read_ct(&svm, &holder2.account);
-    let bob_available = ixs::transfer_handler::available_balance(&bob_ct, &holder2.elgamal);
-    let bob_current: ElGamalCiphertext = bob_ct.available_balance.try_into().unwrap();
+    let withdraw_amount = 1_000;
+    let holder1_ct = ixs::transfer_handler::read_ct(&svm, &holder1.account);
+    let holder1_available = ixs::transfer_handler::available_balance(&holder1_ct, &holder1.elgamal);
+    let holder1_current: ElGamalCiphertext = holder1_ct.available_balance.try_into().unwrap();
+    println!("{}", holder1_available);
 
     let wproofs = proofgen::withdraw::withdraw_proof_data(
-        &bob_current,
-        bob_available,
+        &holder1_current,
+        holder1_available,
         withdraw_amount,
-        &holder2.elgamal,
+        &holder1.elgamal,
     )
     .unwrap();
 
@@ -316,15 +317,15 @@ fn confidential_flow() {
         &wproofs.range_proof_data,
     );
 
-    let new_bob_decryptable = holder2.aes.encrypt(bob_available - withdraw_amount);
+    let new_holder1_decryptable = holder1.aes.encrypt(holder1_available - withdraw_amount);
     let ixs = confidential_transfer::instruction::withdraw(
         &t22new::ID,
-        &holder2.account,
+        &holder1.account,
         &mint_keypair.pubkey(),
         withdraw_amount,
         decimals,
-        &new_bob_decryptable.into(),
-        &user2.pubkey(),
+        &new_holder1_decryptable.into(),
+        &user.pubkey(),
         &[],
         ProofLocation::ContextStateAccount(&weq_ctx),
         ProofLocation::ContextStateAccount(&wrange_ctx),
@@ -332,19 +333,19 @@ fn confidential_flow() {
     .unwrap();
 
     println!("--- withdraw confidential ix ---");
-    utils::send_tx(&mut svm, &ixs, &user2, &[&user2], true);
+    utils::send_tx(&mut svm, &ixs, &user, &[&user], true);
 
     let _recovered =
         ixs::transfer_handler::close_contexts(&mut svm, &authority, &[weq_ctx, wrange_ctx]);
 
-    let acct = svm.get_account(&holder2.account).unwrap();
+    let acct = svm.get_account(&holder1.account).unwrap();
     let state = StateWithExtensions::<Account>::unpack(&acct.data).unwrap();
 
     assert_eq!(state.base.amount, withdraw_amount);
 
-    let bob_ct = ixs::transfer_handler::read_ct(&svm, &holder2.account);
+    let holder1_ct = ixs::transfer_handler::read_ct(&svm, &holder1.account);
     assert_eq!(
-        ixs::transfer_handler::available_balance(&bob_ct, &holder2.elgamal),
+        ixs::transfer_handler::available_balance(&holder1_ct, &holder1.elgamal),
         transfer_amount - withdraw_amount
     );
 }
