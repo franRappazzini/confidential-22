@@ -20,7 +20,7 @@ use zk::encryption::{
 use zkif::instruction::ProofInstruction;
 
 #[test]
-fn initialize() {
+fn initialize_and_create_confidential_mint() {
     let (mut svm, authority, ..) = utils::setup();
     let config = utils::pdas();
 
@@ -54,58 +54,10 @@ fn initialize() {
     let acct = svm.get_account(&mint_keypair.pubkey()).unwrap();
     let state = StateWithExtensions::<Mint>::unpack(&acct.data).unwrap();
     let extensions = state.get_extension_types().unwrap();
-    println!("confidential fee mint len = {}", acct.data.len());
-    println!("extensions = {extensions:?}");
 
     assert!(extensions.contains(&ExtensionType::TransferFeeConfig));
     assert!(extensions.contains(&ExtensionType::ConfidentialTransferMint));
     assert!(extensions.contains(&ExtensionType::ConfidentialTransferFeeConfig));
-}
-
-#[test]
-fn unfreeze() {
-    let (mut svm, authority, user, ..) = utils::setup();
-    let config = utils::pdas();
-    let mint_keypair = Keypair::new();
-
-    let (fee_authority_elgamal, _) = derive_confidential_keys(&authority, b"").unwrap();
-    let fee_authority_pubkey: [u8; 32] = fee_authority_elgamal.pubkey().into();
-
-    let transfer_fee_bps = 500;
-    let maximum_fee = 1_000;
-    let decimals = 6;
-
-    let ix1 = ixs::create_initialixe_ix(
-        &authority,
-        config,
-        &mint_keypair,
-        decimals,
-        transfer_fee_bps,
-        maximum_fee,
-        fee_authority_pubkey,
-    );
-    // fist send the initialize ix to create the token mint
-    utils::send_tx(
-        &mut svm,
-        &[ix1],
-        &authority,
-        &[&authority, &mint_keypair],
-        false,
-    );
-
-    let mint_account_before_update = svm.get_account(&mint_keypair.pubkey()).unwrap();
-    let mint_state_before_update =
-        StateWithExtensions::<Mint>::unpack(&mint_account_before_update.data).unwrap();
-
-    let default_account_state_before_update = mint_state_before_update
-        .get_extension::<DefaultAccountState>()
-        .unwrap();
-
-    let user_ata = utils::token(&mut svm, &user, mint_keypair.pubkey());
-
-    let ix2 = ixs::create_unfreeze_ix(&authority, config, &mint_keypair, user_ata);
-
-    utils::send_tx(&mut svm, &[ix2], &authority, &[&authority], true);
 }
 
 #[test]
@@ -143,29 +95,22 @@ fn confidential_flow() {
     let mint_state_before_update =
         StateWithExtensions::<Mint>::unpack(&mint_account_before_update.data).unwrap();
 
-    let default_account_state_before_update = mint_state_before_update
+    let _default_account_state_before_update = mint_state_before_update
         .get_extension::<DefaultAccountState>()
         .unwrap();
 
     let user = authority.insecure_clone();
-    // TODO update for configure_fee_holder
-    let user_ata = utils::token(&mut svm, &user, mint_keypair.pubkey());
-
-    let ix2 = ixs::create_unfreeze_ix(&authority, config, &mint_keypair, user_ata);
-
-    utils::send_tx(&mut svm, &[ix2], &authority, &[&authority], false);
-
-    // ---- confidential ----
     let holder1 =
         ixs::transfer_handler::configure_fee_holder(&mut svm, &mint_keypair.pubkey(), &user);
     let holder2 =
         ixs::transfer_handler::configure_fee_holder(&mut svm, &mint_keypair.pubkey(), &user2);
 
-    // first unfreeze atas
-    let ix1 = ixs::create_unfreeze_ix(&authority, config, &mint_keypair, holder1.account);
-    let ix2 = ixs::create_unfreeze_ix(&authority, config, &mint_keypair, holder2.account);
+    // first unfreeze ata
+    let ix2 = ixs::create_unfreeze_ix(&authority, config, &mint_keypair, holder1.account);
+    let ix3 = ixs::create_unfreeze_ix(&authority, config, &mint_keypair, holder2.account);
 
-    utils::send_tx(&mut svm, &[ix1, ix2], &authority, &[&authority], false);
+    println!("--- unfreeze confidential atas ix ---");
+    utils::send_tx(&mut svm, &[ix2, ix3], &authority, &[&authority], true);
 
     // aprove holder ata
     ixs::transfer_handler::approve_account(
@@ -298,6 +243,7 @@ fn confidential_flow() {
     )
     .unwrap();
 
+    println!("--- transfer with fee confidential ix ---");
     utils::send_tx(&mut svm, &ixs, &user, &[&user], true);
 
     ixs::transfer_handler::close_contexts(
@@ -322,13 +268,11 @@ fn confidential_flow() {
         &ixs::transfer_handler::read_ct(&svm, &holder2.account),
         &holder2.elgamal,
     );
-    println!("transfer={transfer_amount} fee={expected_fee} holder2_pending={holder2_pending}");
     assert_eq!(holder2_pending, transfer_amount - expected_fee);
 
     // And the fee sits on holder2's account, readable only by the fee authority.
     let withheld =
         ixs::transfer_handler::withheld_on_account(&svm, &holder2.account, &fee_authority_elgamal);
-    println!("withheld on holder2's account = {withheld}");
     assert_eq!(withheld, expected_fee);
 
     // holder2 cannot read it. The ciphertext is under the fee authority's key.
@@ -343,5 +287,64 @@ fn confidential_flow() {
     assert_ne!(
         holder2.elgamal.secret().decrypt_u32(&raw),
         Some(expected_fee)
+    );
+
+    // ---- withdraw back to the public balance ------------------------------
+    let withdraw_amount = 1_000u64;
+    let bob_ct = ixs::transfer_handler::read_ct(&svm, &holder2.account);
+    let bob_available = ixs::transfer_handler::available_balance(&bob_ct, &holder2.elgamal);
+    let bob_current: ElGamalCiphertext = bob_ct.available_balance.try_into().unwrap();
+
+    let wproofs = proofgen::withdraw::withdraw_proof_data(
+        &bob_current,
+        bob_available,
+        withdraw_amount,
+        &holder2.elgamal,
+    )
+    .unwrap();
+
+    let weq_ctx = ixs::transfer_handler::stage_proof(
+        &mut svm,
+        &authority,
+        ProofInstruction::VerifyCiphertextCommitmentEquality,
+        &wproofs.equality_proof_data,
+    );
+    let wrange_ctx = ixs::transfer_handler::stage_proof(
+        &mut svm,
+        &authority,
+        ProofInstruction::VerifyBatchedRangeProofU64,
+        &wproofs.range_proof_data,
+    );
+
+    let new_bob_decryptable = holder2.aes.encrypt(bob_available - withdraw_amount);
+    let ixs = confidential_transfer::instruction::withdraw(
+        &t22new::ID,
+        &holder2.account,
+        &mint_keypair.pubkey(),
+        withdraw_amount,
+        decimals,
+        &new_bob_decryptable.into(),
+        &user2.pubkey(),
+        &[],
+        ProofLocation::ContextStateAccount(&weq_ctx),
+        ProofLocation::ContextStateAccount(&wrange_ctx),
+    )
+    .unwrap();
+
+    println!("--- withdraw confidential ix ---");
+    utils::send_tx(&mut svm, &ixs, &user2, &[&user2], true);
+
+    let _recovered =
+        ixs::transfer_handler::close_contexts(&mut svm, &authority, &[weq_ctx, wrange_ctx]);
+
+    let acct = svm.get_account(&holder2.account).unwrap();
+    let state = StateWithExtensions::<Account>::unpack(&acct.data).unwrap();
+
+    assert_eq!(state.base.amount, withdraw_amount);
+
+    let bob_ct = ixs::transfer_handler::read_ct(&svm, &holder2.account);
+    assert_eq!(
+        ixs::transfer_handler::available_balance(&bob_ct, &holder2.elgamal),
+        transfer_amount - withdraw_amount
     );
 }

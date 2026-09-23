@@ -49,73 +49,6 @@ pub struct Holder {
     pub aes: AeKey,
 }
 
-pub fn create_and_configure(
-    svm: &mut LiteSVM,
-    payer: &Keypair,
-    mint: &Pubkey,
-    owner: &Keypair,
-) -> Holder {
-    let ctoken_account = Keypair::new();
-    let space = ExtensionType::try_calculate_account_len::<TokenAccountState>(&[
-        ExtensionType::ConfidentialTransferAccount,
-    ])
-    .unwrap();
-    let lamports = svm.minimum_balance_for_rent_exemption(space);
-
-    utils::send_tx(
-        svm,
-        &[
-            solana_system_interface::instruction::create_account(
-                &payer.pubkey(),
-                &ctoken_account.pubkey(),
-                lamports,
-                space as u64,
-                &t22new::ID,
-            ),
-            initialize_account3(&t22new::ID, &ctoken_account.pubkey(), mint, &owner.pubkey())
-                .unwrap(),
-        ],
-        payer,
-        &[&ctoken_account, &payer],
-        false,
-    );
-
-    // Both keys come from one signature over a fixed derivation message, via
-    // HKDF-SHA512. Three things worth saying out loud:
-    //
-    //   - The owner can always recover them from their wallet. Nothing is
-    //     stored, and losing them means losing the ability to read the balance.
-    //   - Whatever can produce that signature can decrypt every confidential
-    //     balance the wallet holds.
-    //   - The empty seed is the standard, wallet level derivation. It is
-    //     byte identical to what the spl-token CLI and the JavaScript client
-    //     derive, so those tools can read accounts configured here. A non
-    //     empty seed scopes keys more finely but breaks that interoperability.
-    let (elgamal, aes) = derive_confidential_keys(owner, b"").unwrap();
-    let proof = build_pubkey_validity_proof_data(&elgamal).unwrap();
-
-    let ixs = ct_ix::configure_account(
-        &t22new::ID,
-        &ctoken_account.pubkey(),
-        mint,
-        &aes.encrypt(0).into(),
-        65536,
-        &owner.pubkey(),
-        &[],
-        ProofLocation::InstructionOffset(NonZeroI8::new(1).unwrap(), &proof),
-    )
-    .unwrap();
-
-    utils::send_tx(svm, &ixs, payer, &[owner, payer], false);
-    println!("--- pasa ---");
-
-    Holder {
-        account: ctoken_account.pubkey(),
-        elgamal,
-        aes,
-    }
-}
-
 /// Create a fee bearing confidential holder: a token account sized for all
 /// three account extensions, initialized, and configured.
 pub fn configure_fee_holder(svm: &mut LiteSVM, mint: &Pubkey, owner: &Keypair) -> Holder {
@@ -203,6 +136,7 @@ pub fn mint_to_confidential(
 
     let config = utils::pdas();
 
+    println!("--- deposit confidential ix ---");
     utils::send_tx(
         svm,
         &[Instruction {
@@ -219,7 +153,7 @@ pub fn mint_to_confidential(
         }],
         &authority,
         &[authority],
-        false,
+        true,
     );
 }
 
@@ -276,7 +210,8 @@ pub fn apply_pending(svm: &mut LiteSVM, authority: &Keypair, holder: &Holder, ow
         .data(),
     };
 
-    utils::send_tx(svm, &[ix], authority, &[owner], false);
+    println!("--- apply pending balance ix ---");
+    utils::send_tx(svm, &[ix], authority, &[owner], true);
 }
 
 /// Verify a proof into its own context state account, so the token instruction
@@ -383,7 +318,8 @@ pub fn approve_account(
         data: confidential_22::instruction::ApproveAccount {}.data(),
     };
 
-    utils::send_tx(svm, &[ix], authority, &[authority], false);
+    println!("--- approve confidential account ix ---");
+    utils::send_tx(svm, &[ix], authority, &[authority], true);
 }
 
 pub fn create_transfer_ix(
