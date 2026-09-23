@@ -7,7 +7,8 @@ use solana_signer::Signer;
 use t22new::{
     extension::{
         confidential_transfer, confidential_transfer_fee::ConfidentialTransferFeeAmount,
-        default_account_state::DefaultAccountState, BaseStateWithExtensions, StateWithExtensions,
+        default_account_state::DefaultAccountState, BaseStateWithExtensions, ExtensionType,
+        StateWithExtensions,
     },
     state::{Account, Mint},
 };
@@ -49,6 +50,16 @@ fn initialize() {
         &[&authority, &mint_keypair],
         true,
     );
+
+    let acct = svm.get_account(&mint_keypair.pubkey()).unwrap();
+    let state = StateWithExtensions::<Mint>::unpack(&acct.data).unwrap();
+    let extensions = state.get_extension_types().unwrap();
+    println!("confidential fee mint len = {}", acct.data.len());
+    println!("extensions = {extensions:?}");
+
+    assert!(extensions.contains(&ExtensionType::TransferFeeConfig));
+    assert!(extensions.contains(&ExtensionType::ConfidentialTransferMint));
+    assert!(extensions.contains(&ExtensionType::ConfidentialTransferFeeConfig));
 }
 
 #[test]
@@ -90,8 +101,6 @@ fn unfreeze() {
         .get_extension::<DefaultAccountState>()
         .unwrap();
 
-    println!("{:#?}", default_account_state_before_update);
-
     let user_ata = utils::token(&mut svm, &user, mint_keypair.pubkey());
 
     let ix2 = ixs::create_unfreeze_ix(&authority, config, &mint_keypair, user_ata);
@@ -109,7 +118,7 @@ fn confidential_flow() {
     let fee_authority_pubkey: [u8; 32] = fee_authority_elgamal.pubkey().into();
 
     let transfer_fee_bps = 500;
-    let maximum_fee = 1_000;
+    let maximum_fee = 10_000;
     let decimals = 6;
 
     let ix1 = ixs::create_initialixe_ix(
@@ -138,9 +147,8 @@ fn confidential_flow() {
         .get_extension::<DefaultAccountState>()
         .unwrap();
 
-    println!("{:#?}", default_account_state_before_update);
-
     let user = authority.insecure_clone();
+    // TODO update for configure_fee_holder
     let user_ata = utils::token(&mut svm, &user, mint_keypair.pubkey());
 
     let ix2 = ixs::create_unfreeze_ix(&authority, config, &mint_keypair, user_ata);
@@ -159,28 +167,46 @@ fn confidential_flow() {
 
     utils::send_tx(&mut svm, &[ix1, ix2], &authority, &[&authority], false);
 
-    // TODO hacer aprobacion manual ?
+    // aprove holder ata
+    ixs::transfer_handler::approve_account(
+        &mut svm,
+        &holder1,
+        &user,
+        mint_keypair.pubkey(),
+        config,
+    );
+    ixs::transfer_handler::approve_account(
+        &mut svm,
+        &holder2,
+        &authority,
+        mint_keypair.pubkey(),
+        config,
+    );
 
     // Fund holder1 and move it into her confidential available balance.
-    ixs::transfer_handler::mint_to_confidential(&mut svm, &mint_keypair, &user, &holder1);
-    println!("==== pasa ====");
+    let amount_to_mint = 100_000;
 
+    ixs::transfer_handler::mint_to_confidential(
+        &mut svm,
+        &mint_keypair,
+        &user,
+        &holder1,
+        amount_to_mint,
+    );
     ixs::transfer_handler::apply_pending(&mut svm, &authority, &holder1, &user);
-
-    println!("==== pasa ====");
 
     let holder1_available = ixs::transfer_handler::available_balance(
         &ixs::transfer_handler::read_ct(&svm, &holder1.account),
         &holder1.elgamal,
     );
-    assert_eq!(holder1_available, 100_000);
+    assert_eq!(holder1_available, amount_to_mint);
     assert_eq!(
         ixs::transfer_handler::withheld_on_account(&svm, &holder2.account, &fee_authority_elgamal),
         0
     );
 
     // ---- the fee bearing transfer ----------------------------------------
-    let transfer_amount = 10_000u64;
+    let transfer_amount = 100_000;
     let ct = ixs::transfer_handler::read_ct(&svm, &holder1.account);
     let current_available: ElGamalCiphertext = ct.available_balance.try_into().unwrap();
     let current_decryptable: AeCiphertext = ct.decryptable_available_balance.try_into().unwrap();
@@ -272,7 +298,7 @@ fn confidential_flow() {
     )
     .unwrap();
 
-    utils::send_tx(&mut svm, &ixs, &authority, &[&user, &authority], false);
+    utils::send_tx(&mut svm, &ixs, &user, &[&user], true);
 
     ixs::transfer_handler::close_contexts(
         &mut svm,

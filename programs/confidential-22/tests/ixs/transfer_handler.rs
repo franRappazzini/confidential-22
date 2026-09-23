@@ -183,6 +183,7 @@ pub fn mint_to_confidential(
     mint: &Keypair,
     authority: &Keypair,
     holder: &Holder,
+    amount: u64,
 ) {
     utils::send_tx(
         svm,
@@ -192,7 +193,7 @@ pub fn mint_to_confidential(
             &holder.account,
             &authority.pubkey(),
             &[],
-            10_000,
+            amount,
         )
         .unwrap()],
         &authority,
@@ -214,7 +215,7 @@ pub fn mint_to_confidential(
                 token_program: t22new::ID,
             }
             .to_account_metas(None),
-            data: confidential_22::instruction::DepositConfidential { amount: 10_000 }.data(),
+            data: confidential_22::instruction::DepositConfidential { amount }.data(),
         }],
         &authority,
         &[authority],
@@ -307,7 +308,7 @@ where
             &zkif::ID,
         )],
         payer,
-        &[&context],
+        &[&context, payer],
         false,
     );
     let ix = instruction_kind.encode_verify_proof(
@@ -360,6 +361,29 @@ pub fn close_contexts(svm: &mut LiteSVM, payer: &Keypair, contexts: &[Pubkey]) -
     svm.get_balance(&payer.pubkey())
         .unwrap()
         .saturating_sub(before)
+}
+
+pub fn approve_account(
+    svm: &mut LiteSVM,
+    holder: &Holder,
+    authority: &Keypair,
+    mint: Pubkey,
+    config: Pubkey,
+) {
+    let ix = Instruction {
+        program_id: confidential_22::ID,
+        accounts: confidential_22::accounts::ApproveAccount {
+            ata: holder.account,
+            config,
+            mint,
+            authority: authority.pubkey(),
+            token_program: t22new::ID,
+        }
+        .to_account_metas(None),
+        data: confidential_22::instruction::ApproveAccount {}.data(),
+    };
+
+    utils::send_tx(svm, &[ix], authority, &[authority], false);
 }
 
 pub fn create_transfer_ix(

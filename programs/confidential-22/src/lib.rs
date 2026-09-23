@@ -54,4 +54,8 @@ pub mod confidential_22 {
             new_decryptable_available_balance,
         )
     }
+
+    pub fn approve_account(ctx: Context<ApproveAccount>) -> Result<()> {
+        ctx.accounts.process_ix()
+    }
 }
